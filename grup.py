@@ -1,3 +1,4 @@
+import os
 import feedparser
 import requests
 import sqlite3
@@ -7,9 +8,8 @@ from deep_translator import GoogleTranslator
 
 # ================= НАЛАШТУВАННЯ =================
 
-BOT_TOKEN = "8682834780:AAFA2LNrbqrygTkkdbLhOZwy9nPShAsnZvo"
-GROUP_CHAT_ID = "-1003749922724"
-
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
 # Справжні ID гілок
 THREADS = {
     "news": 7,        # ⚡️ Оперативні новини
