@@ -3,60 +3,45 @@ import feedparser
 import requests
 import sqlite3
 import time
+import threading
 from datetime import datetime
 from deep_translator import GoogleTranslator
+from flask import Flask
 
-# ================= НАЛАШТУВАННЯ =================
+# ================= МІНІ-ВЕБ-СЕРВЕР ДЛЯ КРОНА =================
+app = Flask(__name__)
 
+@app.route('/')
+def home():
+    return "Bot is running! 🚀", 200
+
+def run_web_server():
+    # Render передає порт через змінну оточення PORT
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
+# ================= НАЛАШТУВАННЯ БОТА =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
-# Справжні ID гілок
+
 THREADS = {
-    "news": 7,        # ⚡️ Оперативні новини
-    "analytics": 9,   # 📊 Аналітика та ресерч
-    "onchain": 11,    # 📈 Ончейн та трейдинг
-    "web3": 13,       # 🦄 Web3 та DeFi
-    "ua": 15          # 🇺🇦 Українські медіа
+    "news": 7, "analytics": 9, "onchain": 11, "web3": 13, "ua": 15
 }
 
-# ================= ДЖЕРЕЛА (RSS) =================
-
 SOURCES = [
-    # --- Оперативні новини ---
     {"name": "Cointelegraph", "url": "https://cointelegraph.com/rss", "thread": THREADS["news"]},
     {"name": "CoinDesk", "url": "https://www.coindesk.com/arc/outboundfeeds/rss/", "thread": THREADS["news"]},
     {"name": "CryptoSlate", "url": "https://cryptoslate.com/feed/", "thread": THREADS["news"]},
     {"name": "BeInCrypto", "url": "https://beincrypto.com/feed/", "thread": THREADS["news"]},
-    {"name": "AMBCrypto", "url": "https://ambcrypto.com/feed/", "thread": THREADS["news"]},
-    {"name": "U.Today", "url": "https://u.today/rss", "thread": THREADS["news"]},
-    
-    # --- Аналітика та ресерч ---
-    {"name": "The Block", "url": "https://www.theblock.co/rss.xml", "thread": THREADS["analytics"]},
-    {"name": "Crypto Briefing", "url": "https://cryptobriefing.com/feed/", "thread": THREADS["analytics"]},
-    
-    # --- Ончейн та трейдинг ---
-    {"name": "Glassnode", "url": "https://insights.glassnode.com/rss/", "thread": THREADS["onchain"]},
-    {"name": "NewsBTC", "url": "https://www.newsbtc.com/feed/", "thread": THREADS["onchain"]},
-    {"name": "Bitcoinist", "url": "https://bitcoinist.com/feed/", "thread": THREADS["onchain"]},
-    
-    # --- Web3 та DeFi ---
-    {"name": "The Defiant", "url": "https://thedefiant.io/api/feed", "thread": THREADS["web3"]},
-    
-    # --- Українські медіа ---
     {"name": "Incrypted", "url": "https://incrypted.com/feed/", "thread": THREADS["ua"]},
     {"name": "ForkLog UA", "url": "https://forklog.com.ua/feed", "thread": THREADS["ua"]}
 ]
 
-# ================= ЛОГІКА БОТА =================
-
+# ... (тут функція init_db, is_posted, mark_as_posted, translate_to_ukrainian такі ж, як були) ...
 def init_db():
     conn = sqlite3.connect("crypto_news.db")
     cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS posted_news (
-            link TEXT PRIMARY KEY
-        )
-    """)
+    cursor.execute("CREATE TABLE IF NOT EXISTS posted_news (link TEXT PRIMARY KEY)")
     conn.commit()
     conn.close()
 
@@ -64,9 +49,9 @@ def is_posted(link):
     conn = sqlite3.connect("crypto_news.db")
     cursor = conn.cursor()
     cursor.execute("SELECT 1 FROM posted_news WHERE link = ?", (link,))
-    result = cursor.fetchone()
+    res = cursor.fetchone()
     conn.close()
-    return result is not None
+    return res is not None
 
 def mark_as_posted(link):
     conn = sqlite3.connect("crypto_news.db")
@@ -76,78 +61,41 @@ def mark_as_posted(link):
     conn.close()
 
 def translate_to_ukrainian(text):
-    """Функція перекладу тексту на українську"""
     try:
-        # Перекладаємо на українську (uk)
         return GoogleTranslator(source='auto', target='uk').translate(text)
-    except Exception as e:
-        print(f"Помилка перекладу: {e}")
-        return text # Якщо сталася помилка, повертаємо оригінальний текст
+    except:
+        return text
 
 def send_to_telegram(text, thread_id):
-    """Відправка з обходом блокування Telegram (Flood Wait)"""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": GROUP_CHAT_ID,
-        "message_thread_id": thread_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": False
-    }
-    
-    while True: # Нескінченний цикл, поки не відправить успішно
-        try:
-            response = requests.post(url, json=payload, timeout=10)
-            data = response.json()
-            
-            if response.status_code == 200:
-                return True
-                
-            # Якщо Telegram каже "Зачекайте X секунд" (код 429)
-            elif response.status_code == 429:
-                retry_after = data['parameters']['retry_after']
-                print(f"⏳ Telegram просить зачекати {retry_after} сек. Чекаємо...")
-                time.sleep(retry_after + 1) # Бот чекає потрібний час і цикл повторюється
-                
-            else:
-                print(f"❌ Помилка Telegram: {response.text}")
-                return False
-                
-        except Exception as e:
-            print(f"Помилка відправки: {e}")
-            return False
+    payload = {"chat_id": GROUP_CHAT_ID, "message_thread_id": thread_id, "text": text, "parse_mode": "HTML"}
+    while True:
+        r = requests.post(url, json=payload).json()
+        if r.get("ok"): return True
+        if r.get("error_code") == 429:
+            time.sleep(r['parameters']['retry_after'] + 1)
+        else: return False
 
 def run_parser():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Запуск перевірки новин...")
-    
-    for source in SOURCES:
-        try:
-            feed = feedparser.parse(source["url"])
-            
-            # Беремо свіжі новини
-            for entry in feed.entries[:2]:
-                link = entry.link
-                title = entry.title
-                
-                if not is_posted(link):
-                    # Перекладаємо заголовок перед публікацією
-                    translated_title = translate_to_ukrainian(title)
-                    
-                    message = f"📰 <b>{source['name']}</b>\n\n🔹 {translated_title}\n\n👉 <a href='{link}'>Читати джерело</a>"
-                    
-                    if send_to_telegram(message, source["thread"]):
-                        mark_as_posted(link)
-                        print(f"✅ Опубліковано: {translated_title[:30]}... -> Гілка {source['thread']}")
-                        time.sleep(3) # Базова пауза між повідомленнями
-                        
-        except Exception as e:
-            print(f"Помилка парсингу {source['name']}: {e}")
+    while True:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Перевірка новин...")
+        for source in SOURCES:
+            try:
+                feed = feedparser.parse(source["url"])
+                for entry in feed.entries[:2]:
+                    if not is_posted(entry.link):
+                        title = translate_to_ukrainian(entry.title)
+                        msg = f"📰 <b>{source['name']}</b>\n\n🔹 {title}\n\n👉 <a href='{entry.link}'>Читати</a>"
+                        if send_to_telegram(msg, source["thread"]):
+                            mark_as_posted(entry.link)
+                            print(f"✅ ОК: {title[:30]}...")
+                            time.sleep(3)
+            except Exception as e: print(f"Error: {e}")
+        time.sleep(600)
 
 if __name__ == "__main__":
     init_db()
-    print("🤖 Market Scanner Bot запущено!")
-    
-    while True:
-        run_parser()
-        print("💤 Очікування 10 хвилин...\n")
-        time.sleep(600)
+    # ЗАПУСКАЄМО ВЕБ-СЕРВЕР У ОКРЕМОМУ ПОТОЦІ
+    threading.Thread(target=run_web_server, daemon=True).start()
+    print("🤖 Бот та Веб-сервер запущені!")
+    run_parser()
