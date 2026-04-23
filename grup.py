@@ -6,24 +6,22 @@ import re
 from flask import Flask
 from threading import Thread
 
-# --- 1. ПРАВИЛЬНИЙ FLASK ДЛЯ RENDER ---
+# --- 1. ПРЯМИЙ ЗАПУСК FLASK (для Render) ---
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Market Scanner AI is alive and running!"
+    return "Bot is alive!"
 
 def run():
-    # Render автоматично надає порт через змінну оточення PORT
-    # Якщо її немає, використовуємо 10000 (стандарт для Render)
-    port = int(os.environ.get("PORT", 10000))
-    print(f"📡 Flask сервер запускається на порту {port}...")
+    # Render автоматично підставляє PORT. Якщо ні - беремо 8080
+    port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-def keep_alive():
-    t = Thread(target=run)
-    t.daemon = True # Це важливо: потік помре разом з основною програмою
-    t.start()
+# Запускаємо сервер у фоновому потоці ВІДРАЗУ
+t = Thread(target=run)
+t.daemon = True
+t.start()
 
 # --- 2. КОНФІГУРАЦІЯ ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -34,7 +32,6 @@ FEEDS = [
     "https://forklog.com.ua/feed/",
     "https://incrypted.com/feed/",
     "https://itc.ua/news/feed/",
-    "https://bits.media/rss/",
     "https://ru.beincrypto.com/feed/"
 ]
 
@@ -42,36 +39,27 @@ POSTED_NEWS = set()
 
 # --- 3. ЛОГІКА ПЕРЕКЛАДУ ---
 def translate_news(text):
-    print(f"🔄 Запит на переклад: {text[:50]}...")
-    clean_text = re.sub(r'<[^>]+>', '', text)[:1200] 
+    print(f"🔄 Переклад: {text[:40]}...")
     url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OR_KEY}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {OR_KEY}", "Content-Type": "application/json"}
     
-    prompt = (
-        "Ти професійний крипто-журналіст. Переклади цей текст на УКРАЇНСЬКУ мову. "
-        "Пиши стисло, професійно. Не використовуй фрази 'Ось переклад'. "
-        f"Текст:\n{clean_text}"
-    )
+    prompt = f"Ти професійний крипто-журналіст. Переклади це на УКРАЇНСЬКУ мову. Пиши коротко і професійно. Текст:\n{text}"
 
-    for attempt in range(3):
+    for i in range(3): # 3 спроби
         try:
             res = requests.post(url, headers=headers, json={
                 "model": "google/gemini-2.0-flash-001",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.3
-            }, timeout=45)
+            }, timeout=30)
             
             if res.status_code == 200:
                 translated = res.json()['choices'][0]['message']['content'].strip()
-                if not any(word in translated.lower() for word in [' the ', ' is ', ' with ', ' and ']):
+                # Перевірка, щоб не було англійської
+                if not any(word in translated.lower() for word in [' the ', ' is ', ' and ']):
                     return translated
-            print(f"⚠️ Спроба {attempt+1} не вдалася.")
-        except Exception as e:
-            print(f"⚠️ Збій: {e}")
-        time.sleep(5)
+        except:
+            time.sleep(2)
     return None
 
 def send_to_telegram(text):
@@ -83,43 +71,31 @@ def send_to_telegram(text):
     except:
         return False
 
+# --- 4. ОСНОВНИЙ ЦИКЛ ---
 def parse_and_post():
-    print(f"\n--- ПЕРЕВІРКА НОВИН: {time.strftime('%H:%M:%S')} ---")
+    print(f"🔍 Перевірка новин... {time.strftime('%H:%M')}")
     for feed_url in FEEDS:
         try:
-            response = requests.get(feed_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=20)
-            if response.status_code != 200: continue
+            response = requests.get(feed_url, timeout=15)
             root = ET.fromstring(response.content)
-            for item in root.findall('.//item')[:3]:
+            for item in root.findall('.//item')[:2]:
                 title = item.find('title').text
                 link = item.find('link').text
+                
                 if title in POSTED_NEWS: continue
                 
-                translated_text = translate_news(title)
-                if translated_text:
-                    final_post = f"<b>🔔 НОВИНА</b>\n\n{translated_text.strip()}\n\n👉 <a href='{link}'>Джерело</a>"
-                    if send_to_telegram(final_post):
-                        print(f"✅ Опубліковано: {title[:30]}")
+                translated = translate_news(title)
+                if translated:
+                    post = f"<b>🔔 НОВИНА</b>\n\n{translated}\n\n👉 <a href='{link}'>Джерело</a>"
+                    if send_to_telegram(post):
                         POSTED_NEWS.add(title)
-                        time.sleep(10)
+                        print("✅ Опубліковано!")
+                        time.sleep(5)
         except Exception as e:
             print(f"⚠️ Помилка: {e}")
 
-# --- 4. ЗАПУСК ---
 if __name__ == "__main__":
-    # СПОЧАТКУ запускаємо сервер для Render
-    keep_alive()
-    
-    # Даємо Flask пару секунд, щоб порт точно відкрився
-    time.sleep(3)
-    
-    print("🚀 БОТ-ПАРСЕР ЗАПУЩЕНО")
-    
+    print("🚀 БОТ ЗАПУЩЕНИЙ")
     while True:
-        try:
-            parse_and_post()
-        except Exception as e:
-            print(f"☢️ Помилка циклу: {e}")
-        
-        print("\n😴 Сплю 15 хвилин...")
-        time.sleep(900)
+        parse_and_post()
+        time.sleep(600) # Кожні 10 хв
