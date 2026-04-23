@@ -21,7 +21,7 @@ def run_web_server():
 # ================= НАЛАШТУВАННЯ БОТА =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") # НОВИЙ КЛЮЧ ДЛЯ ШІ
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 THREADS = {
     "news": 7, "analytics": 9, "onchain": 11, "web3": 13, "ua": 15
@@ -86,7 +86,6 @@ def translate_with_ai(text):
         
         if response.status_code == 200:
             translated_text = response.json()['choices'][0]['message']['content'].strip()
-            # Додаткова зачистка від випадкових лапок, які ШІ іноді любить залишати
             translated_text = translated_text.strip("'\"")
             return translated_text
         else:
@@ -96,9 +95,20 @@ def translate_with_ai(text):
         print(f"⚠️ Помилка з'єднання з ШІ: {e}")
         return text
 
+# ================= ВІДПРАВКА В ТЕЛЕГРАМ =================
 def send_to_telegram(text, thread_id):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": GROUP_CHAT_ID, "message_thread_id": thread_id, "text": text, "parse_mode": "HTML"}
+    payload = {
+        "chat_id": GROUP_CHAT_ID, 
+        "message_thread_id": thread_id, 
+        "text": text, 
+        "parse_mode": "HTML",
+        # ОНОВЛЕНО: Примусово просимо Телеграм показувати ВЕЛИКУ картинку
+        "link_preview_options": {
+            "is_disabled": False,
+            "prefer_large_media": True 
+        }
+    }
     while True:
         r = requests.post(url, json=payload).json()
         if r.get("ok"): return True
@@ -106,6 +116,7 @@ def send_to_telegram(text, thread_id):
             time.sleep(r['parameters']['retry_after'] + 1)
         else: return False
 
+# ================= ГОЛОВНИЙ ЦИКЛ ПАРСЕРА =================
 def run_parser():
     while True:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Перевірка новин...")
@@ -114,7 +125,7 @@ def run_parser():
                 feed = feedparser.parse(source["url"])
                 for entry in feed.entries[:2]:
                     if not is_posted(entry.link):
-                        # Використовуємо ШІ для перекладу
+                        # ШІ-переклад
                         title = translate_with_ai(entry.title)
                         
                         msg = f"📰 <b>{source['name']}</b>\n\n🔹 {title}\n\n👉 <a href='{entry.link}'>Читати</a>"
@@ -128,7 +139,7 @@ def run_parser():
 
 if __name__ == "__main__":
     init_db()
-    # ЗАПУСКАЄМО ВЕБ-СЕРВЕР У ОКРЕМОМУ ПОТОЦІ
+    # ЗАПУСКАЄМО ВЕБ-СЕРВЕР У ОКРЕМОМУ ПОТОЦІ ДЛЯ RENDER
     threading.Thread(target=run_web_server, daemon=True).start()
     print("🤖 Бот та Веб-сервер запущені!")
     run_parser()
