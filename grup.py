@@ -11,7 +11,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Market Scanner AI: High-Speed Mode Active"
+    return "Market Scanner AI: High-Speed Clean Mode"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -38,7 +38,7 @@ FEEDS = [
 
 POSTED_NEWS = set()
 
-# --- 3. ШВИДКИЙ ПЕРЕКЛАД (BLITZ MODE) ---
+# --- 3. ШВИДКИЙ ПЕРЕКЛАД (CLEAN MODE) ---
 def fast_translate(text):
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
@@ -47,10 +47,11 @@ def fast_translate(text):
         "HTTP-Referer": "https://render.com"
     }
     
+    # Жорстка інструкція не використовувати зайві слова
     prompt = (
-        f"Переклади цей заголовок новини на українську мову. "
-        f"Додай одне речення, яке пояснює суть новини. "
-        f"Пиши максимально стисло. Дозволяється залишати англійські терміни та назви токенів.\n\n"
+        f"Переклади цей заголовок новини на українську та з нового рядка додай одне речення пояснення. "
+        f"КАТЕГОРИЧНО ЗАБОРОНЕНО використовувати слова 'Заголовок:', 'Суть новини:', 'Ось переклад:' чи подібні. "
+        f"Просто чистий текст перекладу та пояснення.\n\n"
         f"Новина: {text}"
     )
 
@@ -61,17 +62,26 @@ def fast_translate(text):
             res = requests.post(url, headers=headers, json={
                 "model": model_name,
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.5,
-                "max_tokens": 200
+                "temperature": 0.3,
+                "max_tokens": 250
             }, timeout=30) 
             
             if res.status_code == 200:
                 result = res.json()['choices'][0]['message']['content'].strip()
-                # Мінімальна перевірка, щоб не був пустим
+                
+                # Додатковий фільтр-зачистка (на випадок, якщо ШІ проігнорував інструкцію)
+                bad_labels = [
+                    "Заголовок:", "Суть новини:", "Заголовок", "Суть", 
+                    "Headline:", "Summary:", "Переклад:", "Ось переклад:"
+                ]
+                for label in bad_labels:
+                    # Видаляємо без врахування регістру
+                    result = re.sub(re.escape(label), "", result, flags=re.IGNORECASE).strip()
+                
                 if len(result) > 30:
-                    return result.replace("**", "")
+                    return result.replace("**", "").replace("«", "").replace("»", "")
             
-            print(f"⚠️ Модель {model_name} видала помилку, зміна...", flush=True)
+            print(f"⚠️ Модель {model_name} не підійшла, зміна...", flush=True)
             time.sleep(1)
         except:
             continue
@@ -83,11 +93,13 @@ def send_to_telegram(text):
     payload = {"chat_id": CHANNEL_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}
     try:
         res = requests.post(url, json=payload, timeout=20)
+        if res.status_code != 200:
+            print(f"❌ TG ERROR: {res.text}", flush=True)
         return res.status_code == 200
     except:
         return False
 
-# --- 4. ОСНОВНИЙ ЦИКЛ (HIGH SPEED) ---
+# --- 4. ОСНОВНИЙ ЦИКЛ ---
 def main_logic():
     print(f"\n⚡ --- СКАНИРОВАНИЕ РИНКУ: {time.strftime('%H:%M')} ---", flush=True)
     
@@ -99,7 +111,6 @@ def main_logic():
             if response.status_code != 200: continue
             
             root = ET.fromstring(response.content)
-            # ТЕПЕР БЕРЕМО 3 ОСТАННІ НОВИНИ З КОЖНОГО САЙТУ
             items = root.findall('.//item')[:3]
             
             for item in items:
@@ -112,22 +123,29 @@ def main_logic():
                 final_text = fast_translate(title)
                 
                 if final_text:
-                    post = f"<b>🗞 {final_text}</b>\n\n🔗 <a href='{link}'>Джерело</a>"
+                    # Розбиваємо текст, щоб зробити перше речення (заголовок) жирним
+                    lines = final_text.split('\n')
+                    if len(lines) > 1:
+                        # Перша лінія жирна, інші — звичайні
+                        formatted_text = f"<b>{lines[0]}</b>\n\n" + "\n".join(lines[1:])
+                    else:
+                        formatted_text = f"<b>{final_text}</b>"
+
+                    post = f"🗞 {formatted_text}\n\n🔗 <a href='{link}'>Джерело</a>"
                     
                     if send_to_telegram(post):
                         POSTED_NEWS.add(title)
                         print(f"✅ Готово!", flush=True)
-                        time.sleep(15) # Коротка пауза між повідомленнями
+                        time.sleep(10)
             
         except Exception as e:
             print(f"⚠️ Помилка на {feed_url}: {e}", flush=True)
 
 if __name__ == "__main__":
-    print("🚀 Бот запущено в ШВИДКОМУ РЕЖИМІ (Blitz Mode)", flush=True)
+    print("🚀 Бот запущено: CLEAN HIGH-SPEED MODE", flush=True)
     main_logic()
     
     while True:
-        # Перевірка кожні 10 хвилин (зменшив з 15)
         time.sleep(600)
         try:
             main_logic()
