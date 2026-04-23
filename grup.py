@@ -11,7 +11,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Market Scanner AI: Multi-Model Fallback Active"
+    return "Market Scanner AI: High-Speed Mode Active"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -21,7 +21,7 @@ t = Thread(target=run)
 t.daemon = True
 t.start()
 
-# --- 2. КОНФІГУРАЦІЯ (ПРАВИЛЬНІ КЛЮЧІ З ТВОГО RENDER) ---
+# --- 2. КОНФІГУРАЦІЯ ---
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("GROUP_CHAT_ID")
 OR_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -30,14 +30,16 @@ FEEDS = [
     "https://forklog.com.ua/feed/",
     "https://incrypted.com/feed/",
     "https://itc.ua/news/feed/",
-    "https://ru.beincrypto.com/feed/"
+    "https://ru.beincrypto.com/feed/",
+    "https://bits.media/rss/",
+    "https://coingape.com/feed/",
+    "https://en.bits.media/rss/"
 ]
 
 POSTED_NEWS = set()
 
-# --- 3. АНАЛІТИКА (КАРУСЕЛЬ МОДЕЛЕЙ) ---
-def translate_and_analyze(text):
-    print(f"🧠 Аналіз новини: {text[:50]}...", flush=True)
+# --- 3. ШВИДКИЙ ПЕРЕКЛАД (BLITZ MODE) ---
+def fast_translate(text):
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OR_KEY}", 
@@ -46,47 +48,33 @@ def translate_and_analyze(text):
     }
     
     prompt = (
-        f"Ти — провідний український крипто-аналітик. Твоє завдання:\n"
-        f"1. Якісно перекласти заголовок на українську.\n"
-        f"2. Додати 1-2 речення глибокої аналітики (чому це важливо для ринку).\n"
-        f"3. Текст має бути завершеним, БЕЗ обірваних слів.\n"
-        f"4. Стиль: професійний, лаконічний. Не використовуй символи ** для виділення.\n\n"
+        f"Переклади цей заголовок новини на українську мову. "
+        f"Додай одне речення, яке пояснює суть новини. "
+        f"Пиши максимально стисло. Дозволяється залишати англійські терміни та назви токенів.\n\n"
         f"Новина: {text}"
     )
 
-    models_to_try = [
-        "openai/gpt-4o-mini",
-        "google/gemini-2.0-flash-001",
-        "meta-llama/llama-3.3-70b-instruct",
-        "anthropic/claude-3.5-haiku"
-    ]
+    models_to_try = ["openai/gpt-4o-mini", "google/gemini-2.0-flash-001", "anthropic/claude-3-haiku"]
 
-    for attempt, model_name in enumerate(models_to_try):
+    for model_name in models_to_try:
         try:
             res = requests.post(url, headers=headers, json={
                 "model": model_name,
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.4,
-                "max_tokens": 400
-            }, timeout=45) 
+                "temperature": 0.5,
+                "max_tokens": 200
+            }, timeout=30) 
             
             if res.status_code == 200:
                 result = res.json()['choices'][0]['message']['content'].strip()
-                print(f"🔍 [ДІАГНОСТИКА - {model_name}] Відповідь: {result[:120]}...", flush=True)
-                
-                if len(result) > 80 and not any(w in result.lower() for w in [' the ', ' is ', ' translation ']):
-                    # Очищаємо текст від небезпечних для Телеграму символів
-                    clean_result = result.replace("**", "").replace("<", "«").replace(">", "»")
-                    return clean_result
-                else:
-                    print(f"⚠️ Відхилено фільтром якості. Йдемо далі...", flush=True)
-            else:
-                print(f"🛑 [Помилка {model_name}] {res.status_code}", flush=True)
+                # Мінімальна перевірка, щоб не був пустим
+                if len(result) > 30:
+                    return result.replace("**", "")
             
-            time.sleep(3) 
-        except Exception as e:
-            print(f"❌ Збій з'єднання з {model_name}: {e}", flush=True)
-            time.sleep(3)
+            print(f"⚠️ Модель {model_name} видала помилку, зміна...", flush=True)
+            time.sleep(1)
+        except:
+            continue
             
     return None
 
@@ -95,61 +83,53 @@ def send_to_telegram(text):
     payload = {"chat_id": CHANNEL_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}
     try:
         res = requests.post(url, json=payload, timeout=20)
-        if res.status_code == 200:
-            return True
-        else:
-            print(f"❌ ПОМИЛКА TELEGRAM API: {res.text}", flush=True)
-            return False
-    except Exception as e:
-        print(f"❌ Збій відправки в TG: {e}", flush=True)
+        return res.status_code == 200
+    except:
         return False
 
-# --- 4. ОСНОВНИЙ ЦИКЛ ---
+# --- 4. ОСНОВНИЙ ЦИКЛ (HIGH SPEED) ---
 def main_logic():
-    print(f"\n🚀 --- ЗАПУСК МОНІТОРИНГУ: {time.strftime('%H:%M')} ---", flush=True)
+    print(f"\n⚡ --- СКАНИРОВАНИЕ РИНКУ: {time.strftime('%H:%M')} ---", flush=True)
     
-    req_headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/114.0.0.0 Safari/537.36'
-    }
+    req_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/114.0.0.0 Safari/537.36'}
     
     for feed_url in FEEDS:
         try:
             response = requests.get(feed_url, headers=req_headers, timeout=20)
-            if response.status_code != 200:
-                continue
+            if response.status_code != 200: continue
             
             root = ET.fromstring(response.content)
-            item = root.find('.//item')
-            if item is None: continue
+            # ТЕПЕР БЕРЕМО 3 ОСТАННІ НОВИНИ З КОЖНОГО САЙТУ
+            items = root.findall('.//item')[:3]
             
-            title = item.find('title').text
-            link = item.find('link').text
-            
-            if title in POSTED_NEWS: continue
-            
-            final_text = translate_and_analyze(title)
-            
-            if final_text:
-                post = f"<b>💎 MARKET SCANNER ANALYTICS</b>\n\n{final_text}\n\n🔗 <a href='{link}'>Джерело</a>"
+            for item in items:
+                title = item.find('title').text
+                link = item.find('link').text
                 
-                if send_to_telegram(post):
-                    POSTED_NEWS.add(title)
-                    print(f"✅ Опубліковано: {title[:30]}...", flush=True)
-                    time.sleep(45) 
-                else:
-                    print(f"⚠️ Текст перекладено, але НЕ відправлено.", flush=True)
+                if title in POSTED_NEWS: continue
+                
+                print(f"📡 Обробка новини: {title[:50]}...", flush=True)
+                final_text = fast_translate(title)
+                
+                if final_text:
+                    post = f"<b>🗞 {final_text}</b>\n\n🔗 <a href='{link}'>Джерело</a>"
+                    
+                    if send_to_telegram(post):
+                        POSTED_NEWS.add(title)
+                        print(f"✅ Готово!", flush=True)
+                        time.sleep(15) # Коротка пауза між повідомленнями
             
         except Exception as e:
-            print(f"⚠️ Помилка обробки: {e}", flush=True)
+            print(f"⚠️ Помилка на {feed_url}: {e}", flush=True)
 
 if __name__ == "__main__":
-    print("🤖 Бот запущено: ФІНАЛЬНИЙ ФІКС", flush=True)
+    print("🚀 Бот запущено в ШВИДКОМУ РЕЖИМІ (Blitz Mode)", flush=True)
     main_logic()
     
     while True:
-        # Чекаємо 15 хвилин
-        time.sleep(900)
+        # Перевірка кожні 10 хвилин (зменшив з 15)
+        time.sleep(600)
         try:
             main_logic()
         except Exception as e:
-            print(f"☢️ Збій циклу: {e}", flush=True)
+            print(f"☢️ Збій: {e}", flush=True)
