@@ -11,7 +11,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Market Scanner AI: Diagnostic Mode Active"
+    return "Market Scanner AI: Multi-Model Fallback Active"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -35,11 +35,15 @@ FEEDS = [
 
 POSTED_NEWS = set()
 
-# --- 3. АНАЛІТИКА З ДІАГНОСТИКОЮ ---
+# --- 3. АНАЛІТИКА (КАРУСЕЛЬ МОДЕЛЕЙ) ---
 def translate_and_analyze(text):
     print(f"🧠 Аналіз новини: {text[:50]}...", flush=True)
     url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {OR_KEY}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {OR_KEY}", 
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://render.com"
+    }
     
     prompt = (
         f"Ти — провідний український крипто-аналітик. Твоє завдання:\n"
@@ -50,36 +54,43 @@ def translate_and_analyze(text):
         f"Новина: {text}"
     )
 
-    for attempt in range(3):
+    # Список моделей для ротації (Fallback)
+    models_to_try = [
+        "openai/gpt-4o-mini",
+        "google/gemini-2.0-flash-001",
+        "meta-llama/llama-3.3-70b-instruct",
+        "anthropic/claude-3.5-haiku"
+    ]
+
+    for attempt, model_name in enumerate(models_to_try):
+        print(f"🔄 Спроба {attempt+1} з моделлю: {model_name}...", flush=True)
         try:
             res = requests.post(url, headers=headers, json={
-                "model": "google/gemini-2.0-flash-001",
+                "model": model_name,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.4,
                 "max_tokens": 400
-            }, timeout=60)
+            }, timeout=45) # Таймаут 45 секунд на одну модель
             
             if res.status_code == 200:
                 result = res.json()['choices'][0]['message']['content'].strip()
                 
-                # --- ДІАГНОСТИКА: дивимось, що прийшло ---
-                print(f"🔍 [ДІАГНОСТИКА] Відповідь ШІ (довжина {len(result)}): {result[:150]}...", flush=True)
+                print(f"🔍 [ДІАГНОСТИКА - {model_name}] Відповідь (довжина {len(result)}): {result[:120]}...", flush=True)
                 
-                # Перевіряємо, чи текст не занадто короткий і чи немає англійських артиклів
-                if len(result) > 80 and not any(w in result.lower() for w in [' the ', ' is ', ' with ']):
+                # Фільтр якості
+                if len(result) > 80 and not any(w in result.lower() for w in [' the ', ' is ', ' with ', ' translation ']):
                     return result
                 else:
-                    print("⚠️ Відхилено фільтром (закоротке або містить англійські слова)", flush=True)
+                    print(f"⚠️ Відхилено фільтром (закоротке або англійська). Йдемо далі...", flush=True)
             else:
-                # --- ДІАГНОСТИКА: помилка API ---
-                print(f"🛑 [ДІАГНОСТИКА] Помилка OpenRouter {res.status_code}: {res.text}", flush=True)
+                print(f"🛑 [ДІАГНОСТИКА] Помилка {model_name} ({res.status_code}): {res.text}", flush=True)
             
-            print(f"⚠️ Спроба {attempt+1} невдала. Повтор...", flush=True)
-            time.sleep(10)
+            time.sleep(3) # Мікро-пауза перед наступною моделлю
         except Exception as e:
-            print(f"❌ Помилка API: {e}", flush=True)
-            time.sleep(5)
+            print(f"❌ Збій з'єднання з {model_name}: {e}", flush=True)
+            time.sleep(3)
             
+    print("❌ Жодна з 4 моделей не впоралась. Пропускаємо новину.", flush=True)
     return None
 
 def send_to_telegram(text):
@@ -95,16 +106,15 @@ def send_to_telegram(text):
 def main_logic():
     print(f"\n🚀 --- ЗАПУСК МОНІТОРИНГУ: {time.strftime('%H:%M')} ---", flush=True)
     
-    # Маскування під браузер
     req_headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/114.0.0.0 Safari/537.36'
     }
     
     for feed_url in FEEDS:
         try:
             response = requests.get(feed_url, headers=req_headers, timeout=20)
             if response.status_code != 200:
-                print(f"🛑 Сайт {feed_url} заблокував доступ (Помилка {response.status_code})", flush=True)
+                print(f"🛑 Сайт {feed_url} заблокував доступ ({response.status_code})", flush=True)
                 continue
             
             root = ET.fromstring(response.content)
@@ -124,14 +134,18 @@ def main_logic():
                 if send_to_telegram(post):
                     POSTED_NEWS.add(title)
                     print(f"✅ Опубліковано: {title[:30]}...", flush=True)
-                    time.sleep(60)
+                    time.sleep(45) # Затримка між постами
             
         except Exception as e:
             print(f"⚠️ Помилка обробки {feed_url}: {e}", flush=True)
 
 if __name__ == "__main__":
-    print("🤖 Бот запущено в режимі ДІАГНОСТИКИ", flush=True)
+    print("🤖 Бот запущено в режимі МУЛЬТИ-МОДЕЛЬ (Fallback)", flush=True)
     main_logic()
     
     while True:
-        time.sleep
+        time.sleep(900)
+        try:
+            main_logic()
+        except Exception as e:
+            print(f"☢️ Збій циклу: {e}", flush=True)
