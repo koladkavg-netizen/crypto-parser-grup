@@ -21,7 +21,7 @@ t = Thread(target=run)
 t.daemon = True
 t.start()
 
-# --- 2. КОНФІГУРАЦІЯ (ВИПРАВЛЕНІ КЛЮЧІ) ---
+# --- 2. КОНФІГУРАЦІЯ (ПРАВИЛЬНІ КЛЮЧІ З ТВОГО RENDER) ---
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("GROUP_CHAT_ID")
 OR_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -137,7 +137,7 @@ def main_logic():
                     print(f"✅ Опубліковано: {title[:30]}...", flush=True)
                     time.sleep(45) 
                 else:
-                    print(f"⚠️ Текст перекладено, але НЕ відправлено. Дивись помилку вище ☝️", flush=True)
+                    print(f"⚠️ Текст перекладено, але НЕ відправлено.", flush=True)
             
         except Exception as e:
             print(f"⚠️ Помилка обробки: {e}", flush=True)
@@ -147,8 +147,9 @@ if __name__ == "__main__":
     main_logic()
     
     while True:
+        # Чекаємо 15 хвилин
         time.sleep(900)
         try:
             main_logic()
         except Exception as e:
-            print(f"☢️ Збій циклу: {e}",
+            print(f"☢️ Збій циклу: {e}", flush=True)
