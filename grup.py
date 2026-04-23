@@ -6,7 +6,7 @@ import re
 from flask import Flask
 from threading import Thread
 
-# --- 1. ВЕБ-СЕРВЕР ДЛЯ RENDER ---
+# --- 1. ВЕБ-СЕРВЕР ---
 app = Flask('')
 
 @app.route('/')
@@ -26,7 +26,6 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 OR_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# Джерела новин
 FEEDS = [
     "https://forklog.com.ua/feed/",
     "https://incrypted.com/feed/",
@@ -36,77 +35,69 @@ FEEDS = [
 
 POSTED_NEWS = set()
 
-# --- 3. ГЛИБОКА АНАЛІТИКА ТА ПЕРЕКЛАД ---
+# --- 3. АНАЛІТИКА ---
 def translate_and_analyze(text):
-    print(f"🧠 Глибокий аналіз новини: {text[:50]}...")
+    print(f"🧠 Аналіз новини: {text[:50]}...", flush=True) # flush=True виводить лог миттєво
     url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OR_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://render.com", # Для OpenRouter
-    }
+    headers = {"Authorization": f"Bearer {OR_KEY}", "Content-Type": "application/json"}
     
-    # Жорсткий промпт для якості
     prompt = (
         f"Ти — провідний український крипто-аналітик. Твоє завдання:\n"
         f"1. Якісно перекласти заголовок на українську.\n"
         f"2. Додати 1-2 речення глибокої аналітики (чому це важливо для ринку).\n"
         f"3. Текст має бути завершеним, БЕЗ обірваних слів.\n"
         f"4. Стиль: професійний, лаконічний.\n\n"
-        f"Новина для обробки: {text}"
+        f"Новина: {text}"
     )
 
     for attempt in range(3):
         try:
-            # Використовуємо Gemini Flash, але з підвищеними параметрами для якості
             res = requests.post(url, headers=headers, json={
                 "model": "google/gemini-2.0-flash-001",
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.4, # Менше творчості, більше точності
+                "temperature": 0.4,
                 "max_tokens": 400
-            }, timeout=60) # Даємо ШІ цілу хвилину на роздуми
+            }, timeout=60)
             
             if res.status_code == 200:
                 result = res.json()['choices'][0]['message']['content'].strip()
-                
-                # Валідація: якщо текст занадто короткий або є англійські слова — це брак
-                bad_words = [' the ', ' is ', ' with ', ' analysis ']
-                if len(result) > 80 and not any(w in result.lower() for w in bad_words):
+                if len(result) > 80 and not any(w in result.lower() for w in [' the ', ' is ', ' with ']):
                     return result
             
-            print(f"⚠️ Спроба {attempt+1} не пройшла валідацію якості. Переробляю...")
-            time.sleep(10) # Пауза перед повторною спробою
+            print(f"⚠️ Спроба {attempt+1} невдала. Повтор...", flush=True)
+            time.sleep(10)
         except Exception as e:
-            print(f"❌ Помилка API: {e}")
+            print(f"❌ Помилка API: {e}", flush=True)
             time.sleep(5)
             
     return None
 
 def send_to_telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHANNEL_ID, 
-        "text": text, 
-        "parse_mode": "HTML",
-        "disable_web_page_preview": False
-    }
+    payload = {"chat_id": CHANNEL_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}
     try:
         res = requests.post(url, json=payload, timeout=20)
         return res.status_code == 200
     except:
         return False
 
-# --- 4. ОСНОВНИЙ ЦИКЛ З ТОРМОЗАМИ ---
+# --- 4. ОСНОВНИЙ ЦИКЛ ---
 def main_logic():
-    print(f"\n🚀 --- ЗАПУСК МОНІТОРИНГУ: {time.strftime('%H:%M')} ---")
+    print(f"\n🚀 --- ЗАПУСК МОНІТОРИНГУ: {time.strftime('%H:%M')} ---", flush=True)
+    
+    # МАскування під реальний браузер (щоб сайти не блокували)
+    req_headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+    }
     
     for feed_url in FEEDS:
         try:
-            response = requests.get(feed_url, timeout=20)
-            if response.status_code != 200: continue
+            response = requests.get(feed_url, headers=req_headers, timeout=20)
+            if response.status_code != 200:
+                print(f"🛑 Сайт {feed_url} заблокував доступ (Помилка {response.status_code})", flush=True)
+                continue
             
             root = ET.fromstring(response.content)
-            # БЕРЕМО ТІЛЬКИ 1 ОСТАННЮ НОВИНУ (якість понад кількість)
             item = root.find('.//item')
             if item is None: continue
             
@@ -115,37 +106,26 @@ def main_logic():
             
             if title in POSTED_NEWS: continue
             
-            # Обробка ШІ
             final_text = translate_and_analyze(title)
             
             if final_text:
-                post = (
-                    f"<b>💎 MARKET SCANNER ANALYTICS</b>\n\n"
-                    f"{final_text}\n\n"
-                    f"🔗 <a href='{link}'>Джерело новини</a>"
-                )
+                post = f"<b>💎 MARKET SCANNER ANALYTICS</b>\n\n{final_text}\n\n🔗 <a href='{link}'>Джерело</a>"
                 
                 if send_to_telegram(post):
                     POSTED_NEWS.add(title)
-                    print(f"✅ Опубліковано якісний пост: {title[:30]}...")
-                    
-                    # ПАУЗА 1 ХВИЛИНА між постами з різних джерел
-                    print("😴 Пауза 60 сек для стабільності...")
+                    print(f"✅ Опубліковано: {title[:30]}...", flush=True)
                     time.sleep(60)
             
         except Exception as e:
-            print(f"⚠️ Помилка обробки {feed_url}: {e}")
+            print(f"⚠️ Помилка обробки {feed_url}: {e}", flush=True)
 
 if __name__ == "__main__":
-    print("🤖 Бот запущено в режимі ВИСОКОЇ ЯКОСТІ")
-    
-    # Перший запуск відразу
+    print("🤖 Бот запущено в режимі ВИСОКОЇ ЯКОСТІ", flush=True)
     main_logic()
     
     while True:
-        # Перевірка кожні 15 хвилин
-        time.sleep(900)
+        time.sleep(900) # 15 хвилин
         try:
             main_logic()
         except Exception as e:
-            print(f"☢️ Збій: {e}")
+            print(f"☢️ Збій циклу: {e}", flush=True)
