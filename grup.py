@@ -1,145 +1,132 @@
 import os
-import feedparser
 import requests
-import sqlite3
 import time
-import threading
-from datetime import datetime
-from flask import Flask
+import xml.etree.ElementTree as ET
+import re
 
-# ================= МІНІ-ВЕБ-СЕРВЕР ДЛЯ КРОНА =================
-app = Flask(__name__)
+# --- КОНФІГУРАЦІЯ (Беремо з Environment Variables на Render) ---
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
+OR_KEY = os.getenv("OPENROUTER_API_KEY")
 
-@app.route('/')
-def home():
-    return "Bot is running! 🚀", 200
-
-def run_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-# ================= НАЛАШТУВАННЯ БОТА =================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-
-THREADS = {
-    "news": 7, "analytics": 9, "onchain": 11, "web3": 13, "ua": 15
-}
-
-SOURCES = [
-    {"name": "Cointelegraph", "url": "https://cointelegraph.com/rss", "thread": THREADS["news"]},
-    {"name": "CoinDesk", "url": "https://www.coindesk.com/arc/outboundfeeds/rss/", "thread": THREADS["news"]},
-    {"name": "CryptoSlate", "url": "https://cryptoslate.com/feed/", "thread": THREADS["news"]},
-    {"name": "BeInCrypto", "url": "https://beincrypto.com/feed/", "thread": THREADS["news"]},
-    {"name": "Incrypted", "url": "https://incrypted.com/feed/", "thread": THREADS["ua"]},
-    {"name": "ForkLog UA", "url": "https://forklog.com.ua/feed", "thread": THREADS["ua"]}
+# Список RSS-фідів
+FEEDS = [
+    "https://forklog.com.ua/feed/",
+    "https://incrypted.com/feed/",
+    "https://itc.ua/news/feed/",
+    "https://bits.media/rss/",
+    "https://ru.beincrypto.com/feed/" # Він часто дає англійською або російською
 ]
 
-def init_db():
-    conn = sqlite3.connect("crypto_news.db")
-    cursor = conn.cursor()
-    cursor.execute("CREATE TABLE IF NOT EXISTS posted_news (link TEXT PRIMARY KEY)")
-    conn.commit()
-    conn.close()
+# Файл для історії (на Render він буде скидатися при рестарті, 
+# але в циклі while True база триматиметься в пам'яті)
+POSTED_NEWS = set()
 
-def is_posted(link):
-    conn = sqlite3.connect("crypto_news.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM posted_news WHERE link = ?", (link,))
-    res = cursor.fetchone()
-    conn.close()
-    return res is not None
-
-def mark_as_posted(link):
-    conn = sqlite3.connect("crypto_news.db")
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO posted_news (link) VALUES (?)", (link,))
-    conn.commit()
-    conn.close()
-
-# ================= ПЕРЕКЛАД ЧЕРЕЗ ШІ (OPENROUTER) =================
-def translate_with_ai(text):
-    if not OPENROUTER_API_KEY:
-        print("⚠️ Увага: OPENROUTER_API_KEY не знайдено. Повертаю оригінальний текст.")
-        return text
-
-    prompt = f"""Ти — досвідчений криптоаналітик. Твоє завдання: перекласти заголовок новини українською мовою. 
-    Переклад має бути адаптований для професійної крипто-спільноти. Використовуй правильну термінологію (наприклад, бичачий/ведмежий ринок, халвінг, кити, ліквідність).
-    Видай ТІЛЬКИ ідеально перекладений текст, без жодних вступних слів, без пояснень і без лапок.
+def translate_news(text):
+    """Переклад через OpenRouter (Gemini 2.0 Flash) з перевірками"""
+    print("🔄 Запуск перекладу...")
     
-    Оригінал: '{text}'"""
+    # Очищуємо текст від зайвих тегів та обрізаємо довжину
+    clean_text = re.sub(r'<[^>]+>', '', text)[:1200] 
 
-    try:
-        response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "google/gemini-2.0-flash-001",
-                "messages": [{"role": "user", "content": prompt}]
-            },
-            timeout=20
-        )
-        
-        if response.status_code == 200:
-            translated_text = response.json()['choices'][0]['message']['content'].strip()
-            translated_text = translated_text.strip("'\"")
-            return translated_text
-        else:
-            print(f"⚠️ Помилка OpenRouter: Код {response.status_code}")
-            return text
-    except Exception as e:
-        print(f"⚠️ Помилка з'єднання з ШІ: {e}")
-        return text
-
-# ================= ВІДПРАВКА В ТЕЛЕГРАМ =================
-def send_to_telegram(text, thread_id):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": GROUP_CHAT_ID, 
-        "message_thread_id": thread_id, 
-        "text": text, 
-        "parse_mode": "HTML",
-        # ОНОВЛЕНО: Примусово просимо Телеграм показувати ВЕЛИКУ картинку
-        "link_preview_options": {
-            "is_disabled": False,
-            "prefer_large_media": True 
-        }
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OR_KEY}",
+        "Content-Type": "application/json"
     }
-    while True:
-        r = requests.post(url, json=payload).json()
-        if r.get("ok"): return True
-        if r.get("error_code") == 429:
-            time.sleep(r['parameters']['retry_after'] + 1)
-        else: return False
+    
+    prompt = f"Ти професійний крипто-журналіст. Переклади цей текст на УКРАЇНСЬКУ мову. Пиши стисло, професійно, використовуй крипто-терміни. Не додавай фрази типу 'Ось ваш переклад'.\n\nТекст:\n{clean_text}"
 
-# ================= ГОЛОВНИЙ ЦИКЛ ПАРСЕРА =================
-def run_parser():
-    while True:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Перевірка новин...")
-        for source in SOURCES:
-            try:
-                feed = feedparser.parse(source["url"])
-                for entry in feed.entries[:2]:
-                    if not is_posted(entry.link):
-                        # ШІ-переклад
-                        title = translate_with_ai(entry.title)
-                        
-                        msg = f"📰 <b>{source['name']}</b>\n\n🔹 {title}\n\n👉 <a href='{entry.link}'>Читати</a>"
-                        if send_to_telegram(msg, source["thread"]):
-                            mark_as_posted(entry.link)
-                            print(f"✅ ОК: {title[:30]}...")
-                            time.sleep(3)
-            except Exception as e: 
-                print(f"Error parsing {source['name']}: {e}")
-        time.sleep(600)
+    for i in range(3): # 3 спроби
+        try:
+            res = requests.post(url, headers=headers, json={
+                "model": "google/gemini-2.0-flash-001",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.4
+            }, timeout=40)
+            
+            if res.status_code == 200:
+                translated = res.json()['choices'][0]['message']['content'].strip()
+                
+                # Перевірка на англійську (якщо лишилися артиклі - значить не переклав)
+                bad_words = [' the ', ' is ', ' with ', ' that ']
+                if not any(word in translated.lower() for word in bad_words):
+                    return translated
+                else:
+                    print(f"⚠️ Спроба {i+1}: Отримано неякісний переклад (схоже на англійську).")
+            else:
+                print(f"⚠️ Помилка API {res.status_code}: {res.text}")
+        except Exception as e:
+            print(f"⚠️ Помилка мережі при перекладі: {e}")
+        
+        time.sleep(5) # Пауза перед повторною спробою
+    
+    return None
+
+def send_to_telegram(text):
+    """Відправка готового тексту в канал"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHANNEL_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": False
+    }
+    try:
+        res = requests.post(url, json=payload)
+        return res.status_code == 200
+    except Exception as e:
+        print(f"❌ Помилка відправки в TG: {e}")
+        return False
+
+def parse_and_post():
+    """Основна логіка парсингу"""
+    print(f"\n--- ПЕРЕВІРКА НОВИН: {time.strftime('%H:%M:%S')} ---")
+    
+    for feed_url in FEEDS:
+        try:
+            response = requests.get(feed_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=20)
+            if response.status_code != 200: continue
+            
+            root = ET.fromstring(response.content)
+            for item in root.findall('.//item')[:3]: # Беремо останні 3 новини з кожного фіда
+                title = item.find('title').text
+                link = item.find('link').text
+                
+                # Якщо новина вже була — пропускаємо
+                if title in POSTED_NEWS:
+                    continue
+                
+                print(f"🆕 Нова новина: {title}")
+                
+                # Перекладаємо
+                translated_text = translate_news(title)
+                
+                if translated_text:
+                    # Формуємо пост
+                    post_text = f"<b>🔔 НОВИНА</b>\n\n{translated_text}\n\n👉 <a href='{link}'>Читати першоджерело</a>"
+                    
+                    if send_to_telegram(post_text):
+                        print("✅ Опубліковано в Telegram!")
+                        POSTED_NEWS.add(title)
+                        # Пауза між постами (якщо їх декілька), щоб не спамити
+                        time.sleep(10)
+                else:
+                    print(f"❌ Не вдалося перекласти новину: {title}")
+                    
+        except Exception as e:
+            print(f"⚠️ Помилка парсингу {feed_url}: {e}")
 
 if __name__ == "__main__":
-    init_db()
-    # ЗАПУСКАЄМО ВЕБ-СЕРВЕР У ОКРЕМОМУ ПОТОЦІ ДЛЯ RENDER
-    threading.Thread(target=run_web_server, daemon=True).start()
-    print("🤖 Бот та Веб-сервер запущені!")
-    run_parser()
+    print("🚀 ПАРСЕР ЗАПУЩЕНО")
+    
+    # Нескінченний цикл для роботи на Render
+    while True:
+        try:
+            parse_and_post()
+        except Exception as e:
+            print(f"☢️ КРИТИЧНИЙ ЗБІЙ ЦИКЛУ: {e}")
+        
+        # Перевірка кожні 15 хвилин (900 секунд)
+        print("\n😴 Сплю 15 хвилин...")
+        time.sleep(900)
