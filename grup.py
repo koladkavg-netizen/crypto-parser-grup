@@ -11,7 +11,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Market Scanner AI: High-Quality Mode Active"
+    return "Market Scanner AI: Diagnostic Mode Active"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -35,9 +35,9 @@ FEEDS = [
 
 POSTED_NEWS = set()
 
-# --- 3. АНАЛІТИКА ---
+# --- 3. АНАЛІТИКА З ДІАГНОСТИКОЮ ---
 def translate_and_analyze(text):
-    print(f"🧠 Аналіз новини: {text[:50]}...", flush=True) # flush=True виводить лог миттєво
+    print(f"🧠 Аналіз новини: {text[:50]}...", flush=True)
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {"Authorization": f"Bearer {OR_KEY}", "Content-Type": "application/json"}
     
@@ -61,8 +61,18 @@ def translate_and_analyze(text):
             
             if res.status_code == 200:
                 result = res.json()['choices'][0]['message']['content'].strip()
+                
+                # --- ДІАГНОСТИКА: дивимось, що прийшло ---
+                print(f"🔍 [ДІАГНОСТИКА] Відповідь ШІ (довжина {len(result)}): {result[:150]}...", flush=True)
+                
+                # Перевіряємо, чи текст не занадто короткий і чи немає англійських артиклів
                 if len(result) > 80 and not any(w in result.lower() for w in [' the ', ' is ', ' with ']):
                     return result
+                else:
+                    print("⚠️ Відхилено фільтром (закоротке або містить англійські слова)", flush=True)
+            else:
+                # --- ДІАГНОСТИКА: помилка API ---
+                print(f"🛑 [ДІАГНОСТИКА] Помилка OpenRouter {res.status_code}: {res.text}", flush=True)
             
             print(f"⚠️ Спроба {attempt+1} невдала. Повтор...", flush=True)
             time.sleep(10)
@@ -85,7 +95,7 @@ def send_to_telegram(text):
 def main_logic():
     print(f"\n🚀 --- ЗАПУСК МОНІТОРИНГУ: {time.strftime('%H:%M')} ---", flush=True)
     
-    # МАскування під реальний браузер (щоб сайти не блокували)
+    # Маскування під браузер
     req_headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
     }
@@ -120,12 +130,8 @@ def main_logic():
             print(f"⚠️ Помилка обробки {feed_url}: {e}", flush=True)
 
 if __name__ == "__main__":
-    print("🤖 Бот запущено в режимі ВИСОКОЇ ЯКОСТІ", flush=True)
+    print("🤖 Бот запущено в режимі ДІАГНОСТИКИ", flush=True)
     main_logic()
     
     while True:
-        time.sleep(900) # 15 хвилин
-        try:
-            main_logic()
-        except Exception as e:
-            print(f"☢️ Збій циклу: {e}", flush=True)
+        time.sleep
