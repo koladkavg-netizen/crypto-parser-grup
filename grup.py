@@ -11,7 +11,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Market Scanner AI: Telegram Debug Mode"
+    return "Market Scanner AI: Multi-Model Fallback Active"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -21,9 +21,9 @@ t = Thread(target=run)
 t.daemon = True
 t.start()
 
-# --- 2. КОНФІГУРАЦІЯ ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
+# --- 2. КОНФІГУРАЦІЯ (ВИПРАВЛЕНІ КЛЮЧІ) ---
+TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("GROUP_CHAT_ID")
 OR_KEY = os.getenv("OPENROUTER_API_KEY")
 
 FEEDS = [
@@ -35,7 +35,7 @@ FEEDS = [
 
 POSTED_NEWS = set()
 
-# --- 3. АНАЛІТИКА ---
+# --- 3. АНАЛІТИКА (КАРУСЕЛЬ МОДЕЛЕЙ) ---
 def translate_and_analyze(text):
     print(f"🧠 Аналіз новини: {text[:50]}...", flush=True)
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -98,7 +98,6 @@ def send_to_telegram(text):
         if res.status_code == 200:
             return True
         else:
-            # ГОЛОВНЕ: ТЕПЕР МИ ПОБАЧИМО, ЧОМУ ТЕЛЕГРАМ БЛОКУЄ ПОСТ
             print(f"❌ ПОМИЛКА TELEGRAM API: {res.text}", flush=True)
             return False
     except Exception as e:
@@ -144,7 +143,7 @@ def main_logic():
             print(f"⚠️ Помилка обробки: {e}", flush=True)
 
 if __name__ == "__main__":
-    print("🤖 Бот запущено в режимі МУЛЬТИ-МОДЕЛЬ", flush=True)
+    print("🤖 Бот запущено: ФІНАЛЬНИЙ ФІКС", flush=True)
     main_logic()
     
     while True:
@@ -152,4 +151,4 @@ if __name__ == "__main__":
         try:
             main_logic()
         except Exception as e:
-            print(f"☢️ Збій циклу: {e}", flush=True)
+            print(f"☢️ Збій циклу: {e}",
