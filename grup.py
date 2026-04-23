@@ -11,7 +11,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Market Scanner AI: Multi-Model Fallback Active"
+    return "Market Scanner AI: Telegram Debug Mode"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -35,7 +35,7 @@ FEEDS = [
 
 POSTED_NEWS = set()
 
-# --- 3. АНАЛІТИКА (КАРУСЕЛЬ МОДЕЛЕЙ) ---
+# --- 3. АНАЛІТИКА ---
 def translate_and_analyze(text):
     print(f"🧠 Аналіз новини: {text[:50]}...", flush=True)
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -50,11 +50,10 @@ def translate_and_analyze(text):
         f"1. Якісно перекласти заголовок на українську.\n"
         f"2. Додати 1-2 речення глибокої аналітики (чому це важливо для ринку).\n"
         f"3. Текст має бути завершеним, БЕЗ обірваних слів.\n"
-        f"4. Стиль: професійний, лаконічний.\n\n"
+        f"4. Стиль: професійний, лаконічний. Не використовуй символи ** для виділення.\n\n"
         f"Новина: {text}"
     )
 
-    # Список моделей для ротації (Fallback)
     models_to_try = [
         "openai/gpt-4o-mini",
         "google/gemini-2.0-flash-001",
@@ -63,34 +62,32 @@ def translate_and_analyze(text):
     ]
 
     for attempt, model_name in enumerate(models_to_try):
-        print(f"🔄 Спроба {attempt+1} з моделлю: {model_name}...", flush=True)
         try:
             res = requests.post(url, headers=headers, json={
                 "model": model_name,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.4,
                 "max_tokens": 400
-            }, timeout=45) # Таймаут 45 секунд на одну модель
+            }, timeout=45) 
             
             if res.status_code == 200:
                 result = res.json()['choices'][0]['message']['content'].strip()
+                print(f"🔍 [ДІАГНОСТИКА - {model_name}] Відповідь: {result[:120]}...", flush=True)
                 
-                print(f"🔍 [ДІАГНОСТИКА - {model_name}] Відповідь (довжина {len(result)}): {result[:120]}...", flush=True)
-                
-                # Фільтр якості
-                if len(result) > 80 and not any(w in result.lower() for w in [' the ', ' is ', ' with ', ' translation ']):
-                    return result
+                if len(result) > 80 and not any(w in result.lower() for w in [' the ', ' is ', ' translation ']):
+                    # Очищаємо текст від небезпечних для Телеграму символів
+                    clean_result = result.replace("**", "").replace("<", "«").replace(">", "»")
+                    return clean_result
                 else:
-                    print(f"⚠️ Відхилено фільтром (закоротке або англійська). Йдемо далі...", flush=True)
+                    print(f"⚠️ Відхилено фільтром якості. Йдемо далі...", flush=True)
             else:
-                print(f"🛑 [ДІАГНОСТИКА] Помилка {model_name} ({res.status_code}): {res.text}", flush=True)
+                print(f"🛑 [Помилка {model_name}] {res.status_code}", flush=True)
             
-            time.sleep(3) # Мікро-пауза перед наступною моделлю
+            time.sleep(3) 
         except Exception as e:
             print(f"❌ Збій з'єднання з {model_name}: {e}", flush=True)
             time.sleep(3)
             
-    print("❌ Жодна з 4 моделей не впоралась. Пропускаємо новину.", flush=True)
     return None
 
 def send_to_telegram(text):
@@ -98,8 +95,14 @@ def send_to_telegram(text):
     payload = {"chat_id": CHANNEL_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}
     try:
         res = requests.post(url, json=payload, timeout=20)
-        return res.status_code == 200
-    except:
+        if res.status_code == 200:
+            return True
+        else:
+            # ГОЛОВНЕ: ТЕПЕР МИ ПОБАЧИМО, ЧОМУ ТЕЛЕГРАМ БЛОКУЄ ПОСТ
+            print(f"❌ ПОМИЛКА TELEGRAM API: {res.text}", flush=True)
+            return False
+    except Exception as e:
+        print(f"❌ Збій відправки в TG: {e}", flush=True)
         return False
 
 # --- 4. ОСНОВНИЙ ЦИКЛ ---
@@ -114,7 +117,6 @@ def main_logic():
         try:
             response = requests.get(feed_url, headers=req_headers, timeout=20)
             if response.status_code != 200:
-                print(f"🛑 Сайт {feed_url} заблокував доступ ({response.status_code})", flush=True)
                 continue
             
             root = ET.fromstring(response.content)
@@ -134,13 +136,15 @@ def main_logic():
                 if send_to_telegram(post):
                     POSTED_NEWS.add(title)
                     print(f"✅ Опубліковано: {title[:30]}...", flush=True)
-                    time.sleep(45) # Затримка між постами
+                    time.sleep(45) 
+                else:
+                    print(f"⚠️ Текст перекладено, але НЕ відправлено. Дивись помилку вище ☝️", flush=True)
             
         except Exception as e:
-            print(f"⚠️ Помилка обробки {feed_url}: {e}", flush=True)
+            print(f"⚠️ Помилка обробки: {e}", flush=True)
 
 if __name__ == "__main__":
-    print("🤖 Бот запущено в режимі МУЛЬТИ-МОДЕЛЬ (Fallback)", flush=True)
+    print("🤖 Бот запущено в режимі МУЛЬТИ-МОДЕЛЬ", flush=True)
     main_logic()
     
     while True:
